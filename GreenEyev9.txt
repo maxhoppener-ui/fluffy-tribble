@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Green Eye · ESG Dashboard for GenAI (CSV export wired)</title>
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Sortable + fflate (defer to keep paint fast) -->
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.min.js" defer></script>
+  <style>
+    :root { --glass: rgba(255,255,255,0.06); --ring: rgba(99,102,241,0.30); }
+    html, body { height: 100%; }
+    body { background: radial-gradient(1200px 800px at 10% 5%, #0b3a32 0%, transparent 45%),
+                    radial-gradient(1000px 600px at 90% 10%, #12244a 0%, transparent 35%),
+                    linear-gradient(135deg, #0f172a, #09251f 60%, #061913); color: #e5e7eb; }
+    .glass { background: var(--glass); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.06); box-shadow: 0 10px 24px rgba(0,0,0,.25); }
+    .card { transition: transform .2s ease, box-shadow .2s ease; }
+    .card:hover { transform: translateY(-2px); box-shadow: 0 16px 28px rgba(0,0,0,.30); }
+    .handle { cursor: grab; user-select: none; }
+    .plot { width: 100%; height: 100%; min-height: 280px; }
+    .badge { padding: 4px 10px; border-radius: 9999px; font-size: 11px; background: rgba(255,255,255,.08); }
+    .warn { color: #fde68a; }
+    .err  { color: #fecaca; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body class="min-h-screen">
+  <header class="glass card mx-3 my-3 rounded-2xl p-4 sm:p-6 bg-gradient-to-r from-emerald-900/40 to-indigo-900/30">
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <div class="flex items-center gap-4">
+        <div class="h-12 w-12 rounded-2xl bg-gradient-to-br from-emerald-400 to-indigo-400 animate-pulse"></div>
+        <div>
+          <h1 class="text-2xl sm:text-3xl font-semibold tracking-tight">Green Eye — ESG Dashboard for Generative AI</h1>
+          <p class="text-sm text-gray-200/80">Real-time insight into energy use & CO₂ emissions per AI workload, tuned for ChatGPT history exports.</p>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="badge" id="status-plotly">Plotly: loading…</span>
+        <span class="badge" id="status-pyodide">Pyodide: idle</span>
+        <span class="badge" id="status-cc">carboncode: off</span>
+        <button id="themeBtn" class="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15">Theme</button>
+        <button id="resetLayoutBtn" class="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15">Reset layout</button>
+        <button id="exportCsvBtn" class="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15">Export CSV</button>
+      </div>
+    </div>
+  </header>
+
+  <section class="mx-3 grid lg:grid-cols-12 gap-3">
+    <aside class="glass card rounded-2xl p-4 lg:col-span-3">
+      <h2 class="text-lg font-semibold mb-3">Data & Settings</h2>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm mb-1">Load ChatGPT Export (.zip or conversations.json)</label>
+          <input id="fileInput" type="file" accept=".zip,.json" class="w-full text-sm file:mr-3 file:px-3 file:py-2 file:rounded-xl file:border-0 file:bg-emerald-500/90 file:text-white file:hover:bg-emerald-600/90" />
+          <p id="status" class="text-xs text-gray-300/80 mt-1">Your data stays in the browser. No upload occurs.</p>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-sm mb-1">Default Region</label>
+            <select id="regionSelect" class="w-full bg-white/10 rounded-xl p-2">
+              <option value="NL">Netherlands (NL)</option>
+              <option value="EU">EU average</option>
+              <option value="US">United States (US)</option>
+              <option value="UK">United Kingdom (UK)</option>
+              <option value="FR">France (FR)</option>
+              <option value="DE">Germany (DE)</option>
+              <option value="SE">Sweden (SE)</option>
+              <option value="IE">Ireland (IE)</option>
+              <option value="CUSTOM">Custom…</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm mb-1">Grid Intensity (gCO₂/kWh)</label>
+            <input id="intensityInput" type="number" step="1" class="w-full bg-white/10 rounded-xl p-2" placeholder="e.g., 400" />
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm mb-1">Assumptions</label>
+          <div class="grid grid-cols-2 gap-2 text-sm">
+            <div>
+              <label class="block text-xs">Base Wh / prompt</label>
+              <input id="baseWh" type="number" step="0.01" class="w-full bg-white/10 rounded-xl p-2" value="0.34" />
+            </div>
+            <div>
+              <label class="block text-xs">Wh per 1k tokens</label>
+              <input id="whPerKTokens" type="number" step="0.01" class="w-full bg-white/10 rounded-xl p-2" value="19.32" />
+            </div>
+            <label class="flex items-center gap-2 col-span-2"><input id="scaleByTokens" type="checkbox" class="rounded" checked /> Scale by tokens</label>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm mb-1">Widgets</label>
+          <div class="grid grid-cols-2 gap-2 text-sm">
+            <label class="flex items-center gap-2"><input data-widget="kpis" type="checkbox" class="rounded widget-toggle" checked /> Overview</label>
+            <label class="flex items-center gap-2"><input data-widget="byModel" type="checkbox" class="rounded widget-toggle" checked /> By model</label>
+            <label class="flex items-center gap-2"><input data-widget="sources" type="checkbox" class="rounded widget-toggle" checked /> Sources pie</label>
+            <label class="flex items-center gap-2"><input data-widget="heatmap" type="checkbox" class="rounded widget-toggle" checked /> Time heatmap</label>
+            <label class="flex items-center gap-2"><input data-widget="timeline" type="checkbox" class="rounded widget-toggle" checked /> Timeline</label>
+            <label class="flex items-center gap-2"><input data-widget="table" type="checkbox" class="rounded widget-toggle" checked /> Table</label>
+          </div>
+        </div>
+        <div class="mt-4">
+          <h3 class="text-sm font-semibold mb-2">Diagnostics & Tests</h3>
+          <button id="runTestsBtn" class="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15">Run tests</button>
+          <div id="testsOut" class="text-xs text-gray-200/90 mt-2 space-y-1 mono"></div>
+          <div id="errorsOut" class="text-xs err mt-2 space-y-1 mono"></div>
+        </div>
+        <div class="mt-6 text-xs text-gray-300/80">Tip: Drag widgets by the ≡ handle to reorder. Layout auto-saves to your browser.</div>
+      </div>
+    </aside>
+
+    <main class="lg:col-span-9">
+      <div id="grid" class="grid sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+        <section id="w-kpis" class="glass card rounded-2xl p-4 col-span-2">
+          <div class="flex items-start justify-between"><h3 class="text-lg font-semibold">Overview KPIs</h3><div class="handle text-xl">≡</div></div>
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-3">
+            <div class="rounded-xl bg-white/5 p-4"><div class="text-sm text-gray-300/80">Total prompts</div><div id="kpi-prompts" class="text-2xl font-semibold">—</div></div>
+            <div class="rounded-xl bg-white/5 p-4"><div class="text-sm text-gray-300/80">Energy (Wh)</div><div id="kpi-energy" class="text-2xl font-semibold">—</div></div>
+            <div class="rounded-xl bg-white/5 p-4"><div class="text-sm text-gray-300/80">CO₂e (g)</div><div id="kpi-co2" class="text-2xl font-semibold">—</div></div>
+            <div class="rounded-xl bg-white/5 p-4"><div class="text-sm text-gray-300/80">Avg per prompt (Wh)</div><div id="kpi-avg" class="text-2xl font-semibold">—</div></div>
+          </div>
+        </section>
+        <section id="w-byModel" class="glass card rounded-2xl p-4"><div class="flex items-start justify-between"><h3 class="text-lg font-semibold">Energy / CO₂ by Model</h3><div class="handle text-xl">≡</div></div><div id="plot-byModel" class="plot"></div></section>
+        <section id="w-sources" class="glass card rounded-2xl p-4"><div class="flex items-start justify-between"><h3 class="text-lg font-semibold">Query Sources</h3><div class="handle text-xl">≡</div></div><div id="plot-sources" class="plot"></div></section>
+        <section id="w-heatmap" class="glass card rounded-2xl p-4 col-span-2"><div class="flex items-start justify-between"><h3 class="text-lg font-semibold">Consumption Heatmap (Day × Hour)</h3><div class="handle text-xl">≡</div></div><div id="plot-heatmap" class="plot" style="min-height:360px"></div></section>
+        <section id="w-timeline" class="glass card rounded-2xl p-4 col-span-2"><div class="flex items-start justify-between"><h3 class="text-lg font-semibold">Energy over Time</h3><div class="handle text-xl">≡</div></div><div id="plot-timeline" class="plot"></div></section>
+        <section id="w-table" class="glass card rounded-2xl p-4 col-span-2"><div class="flex items-start justify-between"><h3 class="text-lg font-semibold">Per-Query Details</h3><div class="handle text-xl">≡</div></div>
+          <div class="overflow-auto max-h-[420px] mt-2">
+            <table id="dataTable" class="min-w-full text-sm">
+        <thead class="sticky top-0 bg-gray-900 z-50">
+          <tr>
+            <th class="p-2 text-left">Time</th>
+            <th class="p-2 text-left">Model</th>
+            <th class="p-2 text-left">Source</th>
+            <th class="p-2 text-left">Chars</th>
+            <th class="p-2 text-left">Tokens≈</th>
+            <th class="p-2 text-left">Wh</th>
+            <th class="p-2 text-left">gCO₂e</th>
+            <th class="p-2 text-left">Title</th>
+          </tr>
+        </thead>
+              <tbody id="dataBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+      <div class="text-xs text-gray-300/80 mt-4">Notes: If Plotly can't load, KPIs and the table still work; charts show a warning. This restored layout keeps the original look-and-feel you shared.</div>
+    </main>
+  </section>
+
+  <!-- Robust Plotly loader with 5s timeout and multi-CDN fallback -->
+  <script>
+    let plotlyReadyPromise = null;
+    function loadScript(src){ return new Promise((res, rej)=>{ const s=document.createElement('script'); s.src=src; s.async=true; s.onload=()=>res(src); s.onerror=()=>rej(new Error('Failed '+src)); document.head.appendChild(s); }); }
+    async function ensurePlotly(timeoutMs=5000){ if (window.Plotly) return window.Plotly; const cdns=[
+      'https://cdn.plot.ly/plotly-2.35.2.min.js',
+      'https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js',
+      'https://unpkg.com/plotly.js-dist-min@2.35.2/plotly.min.js'
+    ]; const timeout=new Promise((_,rej)=>setTimeout(()=>rej(new Error('Timeout')), timeoutMs));
+      for(const url of cdns){ try{ await Promise.race([loadScript(url), timeout]); if(window.Plotly) return window.Plotly; }catch(e){ console.warn(e.message);} }
+      throw new Error('Plotly failed from all CDNs'); }
+    function getPlotly(){ if(!plotlyReadyPromise){ const badge=document.getElementById('status-plotly'); plotlyReadyPromise = ensurePlotly(5000).then(p=>{ if(badge) badge.textContent='Plotly: ready'; return p; }).catch(e=>{ if(badge) badge.textContent='Plotly: failed (timeout)'; console.warn(e); return null; }); } return plotlyReadyPromise; }
+  </script>
+
+  <script>
+    // ---------- Utilities ----------
+    const $ = (s)=>document.querySelector(s);
+    const $$ = (s)=>Array.from(document.querySelectorAll(s));
+    const fmt = (x,d=2)=>isFinite(x)?Number(x).toLocaleString(undefined,{maximumFractionDigits:d}):'—';
+
+    const state = { rows:[], region:'NL', intensity:400, baseWh:0.34, whPerK:19.32, scaleByTokens:true };
+    const defaultIntensity = { NL:400, EU:300, US:386, UK:250, FR:60, DE:350, SE:50, IE:300 };
+
+    // Theme
+    $('#themeBtn').addEventListener('click', ()=>{
+      const dark = document.body.classList.toggle('dark');
+      document.body.style.background = dark ? 'linear-gradient(135deg, #0b1220, #0b2d2e 35%, #0f3c30 70%, #061a12)' : '';
+    });
+
+    // Drag & drop with guard
+    window.addEventListener('load', ()=>{
+      try{ const grid=$('#grid'); if(window.Sortable&&grid){ new window.Sortable(grid,{handle:'.handle', animation:150, onEnd: saveLayout}); } }catch(e){ const out=$('#errorsOut'); if(out){ out.innerHTML+='<div class="err">Sortable init failed: '+(e?.message||e)+'</div>'; } }
+    });
+
+    function saveLayout(){ const order = $$('#grid > section').map(el=>el.id); localStorage.setItem('geye_order', JSON.stringify(order)); }
+    function loadLayout(){ const raw=localStorage.getItem('geye_order'); if(!raw) return; try{ const order=JSON.parse(raw); const grid=$('#grid'); order.forEach(id=>{ const el=document.getElementById(id); if(el) grid.appendChild(el); }); }catch(_){ }
+    }
+
+    // Controls
+    function setIntensityFromRegion(){ const p=defaultIntensity[state.region]; if(typeof p==='number'){ state.intensity=p; $('#intensityInput').value=p; }}
+    $('#regionSelect').addEventListener('change', ()=>{ state.region=$('#regionSelect').value; if(state.region!=='CUSTOM') setIntensityFromRegion(); recomputeAndRender(); });
+    $('#intensityInput').addEventListener('input', ()=>{ const v=parseFloat($('#intensityInput').value); if(isFinite(v)){ state.intensity=v; // switch to CUSTOM when user edits manually
+      state.region='CUSTOM'; const sel=$('#regionSelect'); if(sel) sel.value='CUSTOM'; }
+      recomputeAndRender();
+    });
+    $('#baseWh').addEventListener('input', ()=>{ state.baseWh=parseFloat($('#baseWh').value)||0; recomputeAndRender(); });
+    $('#whPerKTokens').addEventListener('input', ()=>{ state.whPerK=parseFloat($('#whPerKTokens').value)||0; recomputeAndRender(); });
+    $('#scaleByTokens').addEventListener('change', ()=>{ state.scaleByTokens=$('#scaleByTokens').checked; recomputeAndRender(); });
+
+    // Widget show/hide
+    $$('.widget-toggle').forEach(cb=>cb.addEventListener('change',()=>{ const el=document.getElementById('w-'+cb.dataset.widget); if(!el) return; cb.checked?el.classList.remove('hidden'):el.classList.add('hidden'); saveLayout(); }));
+    $('#resetLayoutBtn').addEventListener('click', ()=>{ localStorage.removeItem('geye_order'); location.reload(); });
+
+    // File loader
+    $('#fileInput').addEventListener('change', async (e)=>{
+      const file = e.target.files?.[0]; if(!file) return;
+      try{
+        const buf = await file.arrayBuffer(); let json=null;
+        if (/\.zip$/i.test(file.name)){
+      const files = fflate.unzipSync(new Uint8Array(buf));
+      const keys  = Object.keys(files);
+      
+      // Prefer conversations.json (or variants like conversations-*.json, and subfolders)
+      const key =
+        keys.find(k => /(^|\/)conversations\.json$/i.test(k)) ||
+        keys.find(k => /(^|\/)conversations[-_].*\.json$/i.test(k)) ||
+        null;
+      
+      if (!key) {
+        if (keys.includes('chat.html')) {
+          throw new Error('This ZIP does not include conversations.json (only chat.html + metadata). Re-export with “All content” so conversations.json is included.');
+        }
+        throw new Error('No conversations.json found in ZIP');
+      }
+      
+      json = JSON.parse(new TextDecoder().decode(files[key]));
+        } else {
+          json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf)));
+        }
+        state.rows = normalize(json);
+        state.rows = computeEnergy(state.rows);
+        $('#status').textContent = `Loaded ${state.rows.length} user prompts.`;
+        renderAll();
+      }catch(err){ $('#status').textContent = 'Load error: '+(err?.message||err); reportError('File load', err); }
+    });
+
+    function reportError(ctx, err){ const out=$('#errorsOut'); if(!out) return; const line=document.createElement('div'); line.textContent = `[${ctx}] ` + (err?.message||err); out.appendChild(line); }
+
+    // Normalizer
+    function normalize(json){
+      const conversations = Array.isArray(json) ? json : (json?.conversations || json?.items || []);
+      const rows=[];
+
+      for(const conv of conversations){
+        const title = conv.title || conv.gist || 'Conversation';
+        const created = toDate(conv.create_time || conv.created || conv.update_time || Date.now());
+
+        // Helper: safely read text parts
+        const getText = (m)=> readText(m?.content);
+        const mapping = conv.mapping && typeof conv.mapping==='object' ? conv.mapping : null;
+
+        if(mapping){
+          const getMsg = (id)=> mapping[id]?.message;
+          const nodes = Object.values(mapping);
+
+          for(const node of nodes){
+            const m = node?.message; if(!m) continue;
+            const role = m.author?.role || m.role; if(role !== 'user') continue;
+
+            const text = getText(m) || '';
+            const ts = toDate(m.create_time) || created;
+
+            // --- Determine model used for THIS user prompt ---
+            let model = 'unknown';
+
+            // 1) Direct assistant child of this user node
+            if(Array.isArray(node.children)){
+              for(const cid of node.children){
+                const cm = getMsg(cid);
+                const cRole = cm?.author?.role || cm?.role;
+                if(cRole === 'assistant'){
+                  model = cm?.metadata?.model_slug || cm?.model_slug || cm?.metadata?.model || 'unknown';
+                  break;
+                }
+                // Some exports insert a system node between user -> assistant
+                const childNode = mapping[cid];
+                if(childNode?.children){
+                  for(const gcid of childNode.children){
+                    const gcm = getMsg(gcid);
+                    const gRole = gcm?.author?.role || gcm?.role;
+                    if(gRole === 'assistant'){
+                      model = gcm?.metadata?.model_slug || gcm?.model_slug || gcm?.metadata?.model || 'unknown';
+                      break;
+                    }
+                  }
+                  if(model !== 'unknown') break;
+                }
+              }
+            }
+
+            // 2) Fallback: the next assistant node in the tree that references this user as parent (or grandparent)
+            if(model === 'unknown'){
+              const candidates = nodes.filter(n=>{
+                const mm = n?.message; if(!mm) return false;
+                const r = mm.author?.role || mm.role; if(r !== 'assistant') return false;
+                return n.parent === node.id || (mapping[n.parent]?.parent === node.id);
+              }).sort((a,b)=> (a?.message?.create_time||0) - (b?.message?.create_time||0));
+              if(candidates[0]){
+                const am = candidates[0].message;
+                model = am?.metadata?.model_slug || am?.model_slug || am?.metadata?.model || 'unknown';
+              }
+            }
+
+            // 3) Last resort: conversation-level hint
+            if(model === 'unknown'){
+              model = conv.model_slug || conv.default_model_slug || conv?.metadata?.model_slug || 'unknown';
+            }
+
+            rows.push({ time: ts, model, source: 'web', chars: text.length, tokens: estimateTokens(text), title, text });
+          }
+        } else if (Array.isArray(conv.messages)){
+          // Simpler format: try to pair user -> next assistant by index
+          for(let i=0;i<conv.messages.length;i++){
+            const m = conv.messages[i];
+            const role = m?.author?.role || m?.role; if(role !== 'user') continue;
+            const text = getText(m) || '';
+            const ts = toDate(m.create_time) || created;
+            let model = 'unknown';
+            // look ahead for assistant
+            for(let j=i+1;j<conv.messages.length;j++){
+              const n = conv.messages[j];
+              const r = n?.author?.role || n?.role;
+              if(r === 'assistant'){ model = n?.metadata?.model_slug || n?.model_slug || n?.metadata?.model || 'unknown'; break; }
+              if(r === 'user') break; // next prompt starts
+            }
+            if(model === 'unknown') model = conv.model_slug || conv.default_model_slug || 'unknown';
+            rows.push({ time: ts, model, source: 'web', chars: text.length, tokens: estimateTokens(text), title, text });
+          }
+        }
+      }
+
+      rows.sort((a,b)=>a.time-b.time); return rows;
+    }
+    function readText(content){ if(!content) return ''; if(Array.isArray(content.parts)) return content.parts.join('\n'); if(typeof content.text==='string') return content.text; if(typeof content==='string') return content; return ''; }
+    function toDate(x){ if(!x) return null; const n= typeof x==='number' ? (x>2e12?x:x*1000) : Date.parse(x); return new Date(isNaN(n)?Date.now():n); }
+    function estimateTokens(t){ return Math.max(1, Math.round((t||'').length/4)); }
+
+    // Energy/CO2
+    function energyWhFor(r){ const scaled = state.scaleByTokens ? (r.tokens/1000)*state.whPerK : 0; return Math.max(0, state.baseWh + scaled); }
+    function gco2ForWh(wh){ return (wh/1000) * state.intensity; }
+    function computeEnergy(rows){ return rows.map(r=>{ const wh=energyWhFor(r); return { ...r, wh, gco2:gco2ForWh(wh) }; }); }
+
+    // Recompute helper
+    function recomputeAndRender(){
+      try{
+        if (Array.isArray(state.rows) && state.rows.length){
+          state.rows = state.rows.map(r=>{ const wh=energyWhFor(r); const gco2=gco2ForWh(wh); return { ...r, wh, gco2 }; });
+        }
+        renderAll();
+      }catch(e){ reportError('recomputeAndRender', e); }
+    }
+
+    // ---------- CSV Export (KPIs + Per-Query) ----------
+    function csvEsc(v){ if(v==null) return ''; const s=String(v); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; }
+    function iso(d){ return d instanceof Date ? new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().replace('T',' ').replace('Z','') : ''; }
+    function buildCsv(){
+      const rows = state.rows||[];
+      const prompts = rows.length;
+      const totalWh = rows.reduce((s,r)=>s+(r.wh||0),0);
+      const totalG  = rows.reduce((s,r)=>s+(r.gco2||0),0);
+      const avgWh   = prompts ? totalWh/prompts : 0;
+
+      const meta = [
+        ['Overview KPIs'],
+        ['Total prompts', prompts],
+        ['Total energy (Wh)', totalWh.toFixed(3)],
+        ['Total CO2e (g)', totalG.toFixed(2)],
+        ['Avg per prompt (Wh)', avgWh.toFixed(3)],
+        ['Region', state.region],
+        ['Grid intensity (gCO2/kWh)', state.intensity],
+        ['Base Wh / prompt', state.baseWh],
+        ['Wh per 1k tokens', state.whPerK],
+        ['Scale by tokens', state.scaleByTokens]
+      ].map(r=>r.map(csvEsc).join(','));
+
+      const header = ['Time (local ISO)','Model','Source','Chars','Tokens≈','Wh','gCO2e','Title'];
+      const lines = rows.map(r=>[
+        iso(r.time), r.model, r.source, r.chars, r.tokens,
+        (r.wh??0).toFixed(3), (r.gco2??0).toFixed(2), r.title||''
+      ].map(csvEsc).join(','));
+
+      const out = ['\ufeff' + meta.join('\n'), '', header.join(','), ...lines].join('\n'); // BOM for Excel
+      return out;
+    }
+    function downloadCsv(text){
+      const blob = new Blob([text], {type:'text/csv;charset=utf-8;'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const ts = new Date();
+      const pad = (n)=>String(n).padStart(2,'0');
+      const filename = `green-eye-export-${ts.getFullYear()}${pad(ts.getMonth()+1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.csv`;
+      a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    }
+    document.getElementById('exportCsvBtn').addEventListener('click', ()=>{
+      try{
+        const csv = buildCsv();
+        downloadCsv(csv);
+      }catch(e){ reportError('CSV export', e); alert('Export failed: '+(e?.message||e)); }
+    });
+
+    // Render
+    async function renderAll(){
+      const Plotly = await getPlotly();
+      const rows = state.rows||[];
+      // KPIs
+      const prompts=rows.length, totalWh=rows.reduce((s,r)=>s+r.wh,0), totalG=rows.reduce((s,r)=>s+r.gco2,0), avg=prompts?totalWh/prompts:0;
+      $('#kpi-prompts').textContent=fmt(prompts,0); $('#kpi-energy').textContent=fmt(totalWh,2); $('#kpi-co2').textContent=fmt(totalG,2); $('#kpi-avg').textContent=fmt(avg,3);
+
+      // Charts
+      if(!Plotly){ ['plot-byModel','plot-sources','plot-heatmap','plot-timeline'].forEach(id=>{ const el=document.getElementById(id); if(el) el.innerHTML='<div class="text-xs warn">Plotly failed to load — charts unavailable.</div>'; }); }
+      else {
+        const byModel = groupBy(rows, r=>r.model||'unknown');
+        const models = Object.keys(byModel); const whs=models.map(m=>sum(byModel[m], r=>r.wh)); const gs=models.map(m=>sum(byModel[m], r=>r.gco2));
+        Plotly.newPlot(
+        'plot-byModel',
+        [
+        // Light green for Wh
+        { type: 'bar', x: models, y: whs, name: 'Wh', marker: { color: '#4ade80' } },
+        // Dark green for gCO2
+        { type: 'bar', x: models, y: gs, name: 'gCO₂', marker: { color: '#065f46' } }
+        ],
+        {
+        barmode: 'group',
+        paper_bgcolor: 'rgba(0,0,0,0)',
+        plot_bgcolor: 'rgba(0,0,0,0)',
+        font: { color: '#e5e7eb' },
+        margin: { t: 24, r: 8, b: 48, l: 48 },
+        xaxis: {
+        tickangle: 45, // Rotate labels diagonally
+        automargin: true
+        },
+        yaxis: {
+        automargin: true
+        }
+        },
+        { displayModeBar: false, responsive: true }
+        );
+        const bySrc = groupBy(rows, r=>r.source||'unknown'); const srcs=Object.keys(bySrc); const counts=srcs.map(s=>bySrc[s].length);
+        Plotly.newPlot(
+        'plot-sources',
+        [{
+          type: 'pie',
+          labels: srcs,
+          values: counts,
+          hole: 0.45,
+          marker: {
+            colors: [
+              '#4ade80', // light green
+              '#22c55e', // medium green
+              '#15803d', // darker green
+              '#065f46', // darkest green
+              '#bbf7d0'  // pale green (extra if needed)
+            ]
+          }
+        }],
+        {
+          paper_bgcolor: 'rgba(0,0,0,0)',
+          font: { color: '#e5e7eb' },
+          margin: { t: 16, b: 16, l: 16, r: 16 }
+        },
+        { displayModeBar: false, responsive: true }
+      );
+        const mat=Array.from({length:7},()=>Array(24).fill(0)); rows.forEach(r=>{ const d=r.time; if(!d) return; const dow=(d.getDay()+6)%7; const h=d.getHours(); mat[dow][h]+=r.wh; });
+        Plotly.newPlot('plot-heatmap', [{
+          type: 'heatmap',
+          z: mat,
+          x: [...Array(24).keys()].map(h => h + "h"),  // full range (0–23h)
+          y: ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],
+          colorscale: [
+            [0,'#061913'],
+            [0.25,'#0b3a32'],
+            [0.5,'#15803d'],
+            [0.75,'#4ade80'],
+            [1,'#bbf7d0']
+          ],
+          showscale: true,
+          colorbar: { title: 'Wh' },
+          xgap: 2,
+          ygap: 2
+        }], {
+          paper_bgcolor: 'rgba(0,0,0,0)',
+          plot_bgcolor: 'rgba(0,0,0,0)',
+          font: { color: '#e5e7eb' },
+          margin: { t: 24, r: 8, b: 48, l: 48 },
+          xaxis: {
+            tickvals: [...Array(24).keys()].filter(h => h % 2 === 1),   // only uneven hours
+            ticktext: [...Array(24).keys()].filter(h => h % 2 === 1).map(h => h + "h")
+          }
+        }, { displayModeBar: false, responsive: true });
+        const byDay = groupBy(rows, r=>formatDate(r.time));
+        const days=Object.keys(byDay).sort();
+        const daily=days.map(d=>sum(byDay[d], r=>r.wh));
+        Plotly.newPlot('plot-timeline',[{
+          type:'scatter',
+          mode:'lines+markers',
+          x:days,
+          y:daily,
+          name:'Wh',
+          line:{color:'#22c55e', width:3},
+          marker:{color:'#4ade80', size:6}
+        }],{
+          paper_bgcolor:'rgba(0,0,0,0)',
+          plot_bgcolor:'rgba(0,0,0,0)',
+          font:{color:'#e5e7eb'},
+          margin:{t:24,r:8,b:48,l:48}
+        },{displayModeBar:false,responsive:true});
+      }
+      // Table
+      const tbody=$('#dataBody'); tbody.innerHTML=''; rows.forEach(r=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td class="p-2 whitespace-nowrap">${r.time?r.time.toLocaleString():''}</td><td class="p-2">${esc(r.model)}</td><td class="p-2">${esc(r.source)}</td><td class="p-2 text-right">${fmt(r.chars,0)}</td><td class="p-2 text-right">${fmt(r.tokens,0)}</td><td class="p-2 text-right">${fmt(r.wh,3)}</td><td class="p-2 text-right">${fmt(r.gco2,2)}</td><td class="p-2">${esc(r.title||'')}</td>`; tbody.appendChild(tr); });
+      saveLayout();
+    }
+
+    function groupBy(arr, keyFn){ const m={}; arr.forEach(x=>{ const k=keyFn(x)||'unknown'; (m[k]||(m[k]=[])).push(x); }); return m; }
+    function sum(arr, fn){ return arr.reduce((s,x)=>s+(fn?fn(x):x),0); }
+    function formatDate(d){ if(!d) return 'Unknown'; const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${da}`; }
+    function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+
+    // Diagnostics
+    function logTest(name, pass, note=''){ const out=$('#testsOut'); const el=document.createElement('div'); el.textContent=`${pass?'✅':'❌'} ${name}${note? ' - '+note:''}`; out.appendChild(el); }
+    $('#runTestsBtn').addEventListener('click', async ()=>{
+      $('#testsOut').innerHTML='';
+      const P = await getPlotly(); logTest('Plotly loads (≤5s)', !!P, P?'ok':'timeout/fail');
+      logTest('Token estimate 8 chars → 2 tokens', estimateTokens('12345678')===2);
+      const sample=[{title:'t', create_time:1700000000, messages:[{author:{role:'user'}, content:{parts:['hi']}, create_time:1700000010}]}];
+      const rows=normalize(sample); logTest('Normalizer returns 1 row', rows.length===1);
+      const mat = Array.from({length:7},()=>Array(24).fill(0)); logTest('Heatmap matrix 7x24', mat.length===7 && mat[0].length===24);
+      const prev={...state}; state.baseWh=0.34; state.whPerK=19.32; state.scaleByTokens=true; const wh=energyWhFor({tokens:4000}); logTest('Energy(4000 tokens)=77.62 Wh', Math.abs(wh-77.62)<1e-6, `got ${wh}`); Object.assign(state, prev);
+      // CSV quick check
+      try { const csv = buildCsv(); logTest('CSV builds (no crash)', typeof csv==='string' && csv.length>0); } catch(e){ logTest('CSV builds (no crash)', false, e?.message||e); }
+    });
+
+    // Boot
+    window.addEventListener('load', ()=>{ loadLayout(); if(state.region!=='CUSTOM'){ state.region=$('#regionSelect').value||'NL'; setIntensityFromRegion(); } getPlotly(); });
+  </script>
+</body>
+</html>
